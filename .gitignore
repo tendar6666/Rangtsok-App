@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller Build folders and artifacts
+build/
+dist/
+*.spec
+*.log
+
+# Database and configuration files
+# (You usually do not want to push personal/live database data to GitHub!)
+*.db
+settings.json
+scratch/
+
+# User manual
+User_Manual.pdf

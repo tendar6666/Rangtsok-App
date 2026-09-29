@@ -1,0 +1,5 @@
+pandas
+ttkbootstrap
+Pillow
+openpyxl
+fpdf2
