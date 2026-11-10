@@ -96,12 +96,27 @@ DEFAULT_SETTINGS = {
 }
 
 
-def parse_ui_date(dd_mm_yyyy):
-    """Convert DD-MM-YYYY to YYYY-MM-DD for accurate SQLite range sorting."""
-    try:
-        return datetime.datetime.strptime(dd_mm_yyyy, "%d-%m-%Y").strftime("%Y-%m-%d")
-    except ValueError:
+def parse_ui_date(date_val):
+    """Convert DD-MM-YYYY or ISO YYYY-MM-DD to YYYY-MM-DD for accurate SQLite range sorting."""
+    if date_val is None:
         return None
+    if hasattr(date_val, "strftime"):
+        return date_val.strftime("%Y-%m-%d")
+    d_str = str(date_val).strip()
+    if not d_str or d_str.lower() in ("nan", "nat", "none"):
+        return None
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(d_str, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    try:
+        ts = pd.to_datetime(d_str, dayfirst=True, errors="coerce")
+        if pd.notna(ts):
+            return ts.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return None
 
 
 def format_db_date(yyyy_mm_dd):
@@ -382,8 +397,17 @@ class ContributionApp:
             pass
         self._syncing = False
 
+    def get_safe_currency_symbol(self, val=None):
+        if val is not None:
+            parts = str(val).split()
+            if parts:
+                return parts[0]
+        setting_val = self.settings.get("currency") if hasattr(self, "settings") and self.settings else "₹"
+        setting_parts = (setting_val or "").split()
+        return setting_parts[0] if setting_parts else "₹"
+
     def on_entry_currency_change(self, event=None):
-        curr_symbol = self.cmb_entry_currency.get().split()[0]
+        curr_symbol = self.get_safe_currency_symbol(self.cmb_entry_currency.get())
         for head_name, (lbl, ent, head_type) in self.head_entries.items():
             if head_type == "Amount":
                 lbl.config(text=f"{head_name} ({curr_symbol}):")
@@ -396,7 +420,7 @@ class ContributionApp:
             widget.destroy()
 
         self.head_entries.clear()
-        curr_symbol = self.cmb_entry_currency.get().split()[0] if self.cmb_entry_currency.get() else ""
+        curr_symbol = self.get_safe_currency_symbol(self.cmb_entry_currency.get())
 
         row, col = 0, 0
         is_first = True
@@ -523,16 +547,19 @@ class ContributionApp:
         conn.close()
 
         self.ent_receipt.delete(0, tk.END)
-        if result:
+        if result and result[0]:
             try:
-                old_rec = result[0]
-                num_part = "".join(filter(str.isdigit, old_rec))
-                if num_part:
-                    next_num = int(num_part) + 1
-                    new_rec = old_rec.replace(num_part, str(next_num))
+                old_rec = str(result[0]).strip()
+                match = re.search(r'(\d+)$', old_rec)
+                if match:
+                    digits = match.group(1)
+                    next_num = int(digits) + 1
+                    new_rec = f"{old_rec[:match.start()]}{next_num:0{len(digits)}d}"
                     self.ent_receipt.insert(0, new_rec)
-                else:
+                elif old_rec:
                     self.ent_receipt.insert(0, old_rec + "_1")
+                else:
+                    self.ent_receipt.insert(0, "100000")
             except Exception:
                 self.ent_receipt.insert(0, "")
         else:
@@ -639,7 +666,8 @@ class ContributionApp:
         conn.commit()
         conn.close()
 
-        messagebox.showinfo("Success", f"{msg}\nTotal: {total:,.2f} {currency.split()[0]}")
+        curr_symbol = self.get_safe_currency_symbol(currency)
+        messagebox.showinfo("Success", f"{msg}\nTotal: {total:,.2f} {curr_symbol}")
         self.clear_entry_form()
         self.auto_set_next_receipt()
         self.refresh_db_table()
@@ -862,7 +890,9 @@ It also removes blank rows and fixes formatting issues.""""")
             if clean_gb not in unique_gbs:
                 unique_gbs[clean_gb] = clean_name
             else:
-                duplicates_removed += 1  # Skip duplicate GB entirely
+                duplicates_removed += 1
+                if len(clean_name) > len(unique_gbs[clean_gb]):
+                    unique_gbs[clean_gb] = clean_name
 
         # Wipe old table and bulk insert the clean, 100% unique data
         cursor.execute("DELETE FROM gb_database")
@@ -1104,9 +1134,22 @@ It also removes blank rows and fixes formatting issues.""""")
 
             selected_head = self.flt_head.get()
             if selected_head != "ALL":
-                if data_json.get(selected_head, 0.0) <= 0:
+                val = data_json.get(selected_head)
+                if val is None:
                     self.current_report_raw_ids.pop()
                     continue
+                elif isinstance(val, (int, float)):
+                    if val <= 0:
+                        self.current_report_raw_ids.pop()
+                        continue
+                elif isinstance(val, str):
+                    if not val.strip():
+                        self.current_report_raw_ids.pop()
+                        continue
+                else:
+                    if not val:
+                        self.current_report_raw_ids.pop()
+                        continue
 
             for h in all_heads:
                 base[h] = data_json.get(h, 0.0)
@@ -1147,8 +1190,6 @@ It also removes blank rows and fixes formatting issues.""""")
             self.rep_tree.heading(c, text=c)
             w_size = 180 if c == "Name" else 110
             self.rep_tree.column(c, width=w_size, anchor="center" if c != "Name" else "w", minwidth=90, stretch=False)
-            
-        self.rep_tree.bind("<Double-1>", self._rep_tree_auto_resize_column)
 
         for idx, row_data in self.current_report_df.iterrows():
             self.rep_tree.insert("", "end", iid=str(idx), values=list(row_data))
@@ -1188,20 +1229,28 @@ It also removes blank rows and fixes formatting issues.""""")
         total_records = len(self.current_report_df)
         immediate_sum = self.current_report_df["Total"].sum() if not self.current_report_df.empty else 0.0
         
-        curr_symbol = self.settings.get("currency", "").split()[0]
+        curr_symbol = self.get_safe_currency_symbol(self.settings.get("currency"))
         self.lbl_rep_summary.config(
             text=f"Total Displayed Records: {total_records}   |   IMMEDIATE SUM TOTAL: {immediate_sum:,.2f} {curr_symbol}"
         )
 
-    def on_report_double_click(self, event):
+    def on_report_double_click(self, event=None):
+        if event and hasattr(event, "x") and hasattr(event, "y"):
+            region = self.rep_tree.identify_region(event.x, event.y)
+            if region in ("separator", "heading"):
+                self._rep_tree_auto_resize_column(event)
+                return
         selected = self.rep_tree.selection()
         if not selected:
             return
         if selected[0] == "total":
             return
-        idx = int(selected[0])
-        tx_id = self.current_report_raw_ids[idx]
-        self.load_entry_for_edit(tx_id)
+        try:
+            idx = int(selected[0])
+            tx_id = self.current_report_raw_ids[idx]
+            self.load_entry_for_edit(tx_id)
+        except (ValueError, IndexError):
+            pass
 
     def export_report(self):
         if self.current_report_df.empty:
@@ -1255,14 +1304,17 @@ It also removes blank rows and fixes formatting issues.""""")
 
     def _rep_tree_auto_resize_column(self, event):
         region = self.rep_tree.identify_region(event.x, event.y)
-        if region != "separator":
+        if region not in ("separator", "heading"):
             return
             
         col = self.rep_tree.identify_column(event.x)
         if not col:
             return
             
-        col_idx = int(col.replace('#', '')) - 1
+        try:
+            col_idx = int(col.replace('#', '')) - 1
+        except ValueError:
+            return
         cols = self.rep_tree["columns"]
         if col_idx < 0 or col_idx >= len(cols):
             return
@@ -1323,19 +1375,15 @@ It also removes blank rows and fixes formatting issues.""""")
                 continue
                 
             val = row.get("Transaction Date", "")
-            if hasattr(val, "strftime"):
-                val_str = val.strftime("%d-%m-%Y")
-            else:
-                val_str = str(val).strip()
-
-            parsed = parse_ui_date(val_str)
+            parsed = parse_ui_date(val)
             if not parsed:
+                val_str = val.strftime("%d-%m-%Y") if hasattr(val, "strftime") else str(val).strip()
                 bad_dates.append(f"Row {idx+2}: '{val_str}'")
 
         if bad_dates:
             err_msg = (
                 "IMPORT REJECTED: Invalid 'Transaction Date' formats detected.\n"
-                "Dates must strictly match the DD-MM-YYYY format (e.g., 30-01-2026).\n\n"
+                "Dates must be in DD-MM-YYYY or ISO YYYY-MM-DD format (e.g., 30-01-2026 or 2026-01-30).\n\n"
                 "💡 PRO TIP FOR EASY IMPORTING:\n"
                 "Excel often breaks date formats automatically. To bypass this:\n"
                 "1. Export a report from the app first (pass a dummy entry if needed).\n"
@@ -1364,29 +1412,55 @@ It also removes blank rows and fixes formatting issues.""""")
             currency = str(row["Currency"]).strip()
 
             raw_d = row["Transaction Date"]
-            if hasattr(raw_d, "strftime"):
-                d_str = raw_d.strftime("%d-%m-%Y")
-            else:
-                d_str = str(raw_d).strip()
-            tx_date_db = parse_ui_date(d_str)
+            tx_date_db = parse_ui_date(raw_d)
+            if not tx_date_db:
+                tx_date_db = datetime.date.today().strftime("%Y-%m-%d")
 
             acc_data = {}
             for item in self.settings.get("account_heads", []):
                 h = item["head"]
                 h_type = item.get("type", "Amount")
-                val = row[h]
+                val = row.get(h) if h in row else None
                 if h_type == "Amount":
                     try:
-                        acc_data[h] = float(val)
+                        if pd.isna(val):
+                            acc_data[h] = 0.0
+                        else:
+                            f_val = float(val)
+                            import math
+                            if math.isnan(f_val) or math.isinf(f_val):
+                                acc_data[h] = 0.0
+                            else:
+                                acc_data[h] = f_val
                     except Exception:
                         acc_data[h] = 0.0
                 else:
                     if hasattr(val, "strftime"):
                         acc_data[h] = val.strftime("%d-%m-%Y")
+                    elif pd.isna(val):
+                        acc_data[h] = ""
                     else:
-                        acc_data[h] = str(val).strip() if pd.notna(val) else ""
+                        v_str = str(val).strip()
+                        if v_str.lower() in ("nan", "nat", "none"):
+                            acc_data[h] = ""
+                        else:
+                            parsed_d = parse_ui_date(v_str)
+                            if parsed_d:
+                                acc_data[h] = format_db_date(parsed_d)
+                            else:
+                                acc_data[h] = v_str
 
-            total = float(row["Total"]) if "Total" in row else sum(v for v in acc_data.values() if isinstance(v, (int, float)))
+            total_val = row.get("Total") if "Total" in row else None
+            try:
+                if pd.isna(total_val):
+                    total = sum(v for v in acc_data.values() if isinstance(v, (int, float)))
+                else:
+                    total = float(total_val)
+                    import math
+                    if math.isnan(total) or math.isinf(total):
+                        total = sum(v for v in acc_data.values() if isinstance(v, (int, float)))
+            except Exception:
+                total = sum(v for v in acc_data.values() if isinstance(v, (int, float)))
 
             cursor.execute(
                 "INSERT OR IGNORE INTO gb_database (gb_number, name) VALUES (?, ?)", (gb_num, name)
@@ -1879,6 +1953,8 @@ It also removes blank rows and fixes formatting issues.""""")
         save_settings(self.settings)
 
         self.refresh_settings_heads_list()
+        self.build_dynamic_account_inputs()
+        self.refresh_report_filters()
         self.ent_new_head.delete(0, tk.END)
         self.cmb_new_type.set("Amount")
         self.on_head_type_change()
@@ -1888,32 +1964,91 @@ It also removes blank rows and fixes formatting issues.""""")
     def delete_account_head(self):
         selected = self.tree_heads.selection()
         if not selected:
+            messagebox.showwarning("No Selection", "Please select an Account Head to delete.")
             return
-        idx = self.tree_heads.index(selected[0])
-        heads_list = self.settings.get("account_heads", [])
-        
-        target_head = heads_list[idx]["name"]
-        
-        # Check if head is used in the database
+
+        item_values = self.tree_heads.item(selected[0], "values")
+        if item_values and len(item_values) > 1:
+            target_head = item_values[1]
+        else:
+            idx = self.tree_heads.index(selected[0])
+            heads_list = self.settings.get("account_heads", [])
+            if 0 <= idx < len(heads_list):
+                target_head = heads_list[idx].get("head")
+            else:
+                return
+
+        if not target_head:
+            return
+
+        # Check if head has active financial usage in the database
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM transactions WHERE account_data LIKE ?", (f'%"{target_head} (%',))
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        if count > 0:
+        cursor.execute("SELECT id, account_data FROM transactions")
+        rows = cursor.fetchall()
+
+        active_count = 0
+        txs_with_head = []
+        for tx_id, acc_data_str in rows:
+            try:
+                acc_data = json.loads(acc_data_str)
+                if target_head in acc_data:
+                    txs_with_head.append((tx_id, acc_data))
+                    val = acc_data[target_head]
+                    if isinstance(val, (int, float)) and abs(val) > 1e-6:
+                        active_count += 1
+                    elif isinstance(val, str) and val.strip() != "":
+                        active_count += 1
+            except Exception:
+                pass
+
+        if active_count > 0:
+            conn.close()
             messagebox.showerror(
                 "Deletion Blocked",
                 f"Cannot delete Account Head '{target_head}'.\n\n"
-                f"There are {count} recorded entries in the database using this head.\n"
-                "You must delete those entries from the GB Database/Report first before deleting the head."
+                f"There are {active_count} recorded transaction(s) with active contributions under this head.\n"
+                "To preserve financial integrity, you must delete or modify those transactions before deleting this head."
             )
             return
 
-        heads_list.pop(idx)
-        self.settings["account_heads"] = heads_list
+        if not messagebox.askyesno(
+            "Confirm Deletion",
+            f"Are you sure you want to delete the account head '{target_head}'?"
+        ):
+            conn.close()
+            return
+
+        # Cleanly purge any zero/empty keys for target_head from transactions.account_data in paljor_contribution.db so no orphan keys remain
+        for tx_id, acc_data in txs_with_head:
+            if target_head in acc_data:
+                del acc_data[target_head]
+                cursor.execute(
+                    "UPDATE transactions SET account_data=? WHERE id=?",
+                    (json.dumps(acc_data), tx_id)
+                )
+        conn.commit()
+        conn.close()
+
+        # Remove the head from heads_list and update self.settings["account_heads"]
+        heads_list = self.settings.get("account_heads", [])
+        self.settings["account_heads"] = [h for h in heads_list if h.get("head") != target_head]
         save_settings(self.settings)
+
+        # Synchronize the entire UI immediately
         self.refresh_settings_heads_list()
+        self.build_dynamic_account_inputs()
+        self.refresh_report_filters()
+
+        # Clear settings form input fields
+        self.ent_new_head.delete(0, tk.END)
+        self.cmb_new_type.set("Amount")
+        self.on_head_type_change()
+        self.ent_new_def.delete(0, tk.END)
+        self.ent_new_def.insert(0, "")
+
+        # Provide user feedback
+        messagebox.showinfo("Deleted", f"Account head '{target_head}' was deleted successfully.")
 
     def add_location(self):
         country = self.cmb_geo_country.get().strip()

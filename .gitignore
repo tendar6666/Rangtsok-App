@@ -12,8 +12,34 @@ dist/
 # Database and configuration files
 # (You usually do not want to push personal/live database data to GitHub!)
 *.db
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 settings.json
 scratch/
 
-# User manual
+# Teamwork Agent Internal Data
+.agents/
+
+# Environment, Secrets & Keys
+.env
+.env.*
+*.key
+*.pem
+*.cert
+
+# Editor & System files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary & Backup files
+*.bak
+*.tmp
+
+# User manual (uploaded as a Release asset instead)
 User_Manual.pdf
