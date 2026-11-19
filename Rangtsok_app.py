@@ -316,10 +316,20 @@ class ContributionApp:
                 self.lbl_aadhaar.grid_remove()
                 self.ent_aadhaar.grid_remove()
         if hasattr(self, "db_tree"):
+            tree_w = self.db_tree.winfo_width()
             if enabled:
                 self.db_tree.configure(displaycolumns=("gb", "name", "aadhaar"))
+                gb_w, aad_w = 220, 240
+                name_w = max(250, tree_w - gb_w - aad_w - 4) if tree_w > 500 else 480
+                self.db_tree.column("gb", width=gb_w, minwidth=140, stretch=False)
+                self.db_tree.column("name", width=name_w, minwidth=200, stretch=True)
+                self.db_tree.column("aadhaar", width=aad_w, minwidth=160, stretch=False)
             else:
                 self.db_tree.configure(displaycolumns=("gb", "name"))
+                gb_w = 240
+                name_w = max(250, tree_w - gb_w - 4) if tree_w > 500 else 600
+                self.db_tree.column("gb", width=gb_w, minwidth=140, stretch=False)
+                self.db_tree.column("name", width=name_w, minwidth=200, stretch=True)
         if hasattr(self, "chk_rep_aadhaar"):
             if enabled:
                 self.chk_rep_aadhaar.pack(side="left", padx=(6, 8))
