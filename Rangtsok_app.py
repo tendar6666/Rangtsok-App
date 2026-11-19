@@ -81,7 +81,8 @@ DEFAULT_SETTINGS = {
     "from_date": datetime.date.today().strftime("%d-%m-%Y"),
     "to_date": datetime.date.today().strftime("%d-%m-%Y"),
     "theme": "cosmo",
-    "enable_aadhaar": True,
+    "enable_aadhaar": False,
+    "show_aadhaar_in_report": False,
     "currency": "INR",
     "currencies": ["AUD", "CHF", "INR", "NPR", "TWD", "USD", "ZAR"],
     "countries": {
@@ -299,10 +300,13 @@ class ContributionApp:
             pass
 
     def is_aadhaar_enabled(self):
-        return bool(self.settings.get("enable_aadhaar", True))
+        return bool(self.settings.get("enable_aadhaar", False))
+
+    def is_report_aadhaar_enabled(self):
+        return self.is_aadhaar_enabled() and bool(self.settings.get("show_aadhaar_in_report", False))
 
     def apply_aadhaar_visibility(self):
-        """Show or hide Aadhaar Number UI elements across Entry Form and GB Database."""
+        """Show or hide Aadhaar Number UI elements across Entry Form, GB Database, and Reports."""
         enabled = self.is_aadhaar_enabled()
         if hasattr(self, "lbl_aadhaar") and hasattr(self, "ent_aadhaar"):
             if enabled:
@@ -316,6 +320,11 @@ class ContributionApp:
                 self.db_tree.configure(displaycolumns=("gb", "name", "aadhaar"))
             else:
                 self.db_tree.configure(displaycolumns=("gb", "name"))
+        if hasattr(self, "chk_rep_aadhaar"):
+            if enabled:
+                self.chk_rep_aadhaar.pack(side="left", padx=(6, 8))
+            else:
+                self.chk_rep_aadhaar.pack_forget()
 
     def update_title(self):
         office = self.settings.get("office_name", "Office of Tibet")
@@ -805,6 +814,40 @@ class ContributionApp:
                 (gb_num, name, new_aadhaar),
             )
 
+    def _smart_merge_gb_record(self, cursor, gb_num, name, aadhaar_val=""):
+        """Smart non-destructive merge for multi-collector Excel imports:
+        - Inserts new GB holders (with Aadhaar if present).
+        - For existing GB holders: keeps the longer/more complete Name, and fills in
+          any non-empty Aadhaar without ever overwriting existing Aadhaar with blank.
+        """
+        gb_clean = str(gb_num or "").strip()
+        name_clean = str(name or "").strip()
+        aad_clean = clean_aadhaar(aadhaar_val)
+        if not gb_clean or not name_clean:
+            return
+
+        cursor.execute(
+            "SELECT gb_number, name, COALESCE(aadhaar_number, '') FROM gb_database WHERE LOWER(gb_number) = LOWER(?)",
+            (gb_clean,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            existing_gb, existing_name, existing_aad = existing
+            existing_name_clean = str(existing_name or "").strip()
+            existing_aad_clean = str(existing_aad or "").strip()
+            best_name = name_clean if len(name_clean) > len(existing_name_clean) else existing_name_clean
+            best_aad = aad_clean if aad_clean else existing_aad_clean
+            if best_name != existing_name_clean or best_aad != existing_aad_clean:
+                cursor.execute(
+                    "UPDATE gb_database SET name = ?, aadhaar_number = ? WHERE gb_number = ?",
+                    (best_name, best_aad, existing_gb),
+                )
+        else:
+            cursor.execute(
+                "INSERT INTO gb_database (gb_number, name, aadhaar_number) VALUES (?, ?, ?)",
+                (gb_clean, name_clean, aad_clean),
+            )
+
     def lookup_gb(self, event=None, auto=False):
         gb_num = self.ent_gb.get().strip()
         if not gb_num:
@@ -1217,6 +1260,9 @@ It also removes blank rows and fixes formatting issues.""""")
         )
         btn_del_gb.pack(side="right", padx=5)
 
+        btn_restore = ttk.Button(frame_controls, text="♻️ Restore Database", command=self.restore_db)
+        btn_restore.pack(side="right", padx=5)
+
         btn_backup = ttk.Button(frame_controls, text="💾 Backup Database", command=self.backup_db)
         btn_backup.pack(side="right", padx=5)
 
@@ -1483,10 +1529,96 @@ It also removes blank rows and fixes formatting issues.""""")
         import shutil
 
         try:
+            # Flush WAL journal into main DB file before copying so backup is 100% complete
+            try:
+                conn = sqlite3.connect(DB_FILE)
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.close()
+            except Exception:
+                pass
             shutil.copy(DB_FILE, target_file)
             messagebox.showinfo("Backup Success", f"Database backed up securely to:\n{target_file}")
         except Exception as e:
             messagebox.showerror("Backup Failed", str(e))
+
+    def restore_db(self):
+        source_file = filedialog.askopenfilename(
+            title="Select Backup Database to Restore",
+            filetypes=[("SQLite Database", "*.db"), ("All Files", "*.*")],
+        )
+        if not source_file:
+            return
+
+        if os.path.abspath(source_file) == os.path.abspath(DB_FILE):
+            messagebox.showwarning("Same File", "The selected file is already the active database.")
+            return
+
+        # 1. Validate backup integrity and required schema before touching active DB
+        try:
+            check_conn = sqlite3.connect(source_file)
+            cur = check_conn.cursor()
+            integrity = cur.execute("PRAGMA integrity_check").fetchone()
+            tables = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            check_conn.close()
+            if not integrity or str(integrity[0]).lower() != "ok":
+                messagebox.showerror("Invalid Backup", "The selected database failed integrity verification and cannot be restored.")
+                return
+            if "transactions" not in tables or "gb_database" not in tables:
+                messagebox.showerror(
+                    "Invalid Backup",
+                    "The selected file is not a valid Rangtsok App database (missing required tables).",
+                )
+                return
+        except Exception as e:
+            messagebox.showerror("Invalid Database File", f"Cannot read selected backup file:\n{e}")
+            return
+
+        if not messagebox.askyesno(
+            "Confirm Database Restore",
+            "Restoring this backup will replace your current active database.\n"
+            "An automatic safety backup of your current database will be saved first.\n\n"
+            "Do you want to proceed?",
+        ):
+            return
+
+        import shutil
+
+        try:
+            # Flush current WAL before making automatic safety backup
+            if os.path.exists(DB_FILE):
+                try:
+                    c = sqlite3.connect(DB_FILE)
+                    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    c.close()
+                except Exception:
+                    pass
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                safety_path = f"{os.path.splitext(DB_FILE)[0]}_before_restore_{ts}.db"
+                shutil.copy(DB_FILE, safety_path)
+            else:
+                safety_path = None
+
+            # Remove stale WAL/SHM sidecars so SQLite never replays old logs onto restored DB
+            for suffix in ("-wal", "-shm"):
+                sidecar = DB_FILE + suffix
+                if os.path.exists(sidecar):
+                    try:
+                        os.remove(sidecar)
+                    except Exception:
+                        pass
+
+            shutil.copy(source_file, DB_FILE)
+            # Run init_db() to migrate older backup schemas (e.g., add aadhaar_number & indexes)
+            init_db()
+
+            self.refresh_db_table()
+            self.refresh_recent_entries()
+            self.auto_set_next_receipt()
+
+            extra_note = f"\n\nSafety backup of previous DB saved to:\n{safety_path}" if safety_path else ""
+            messagebox.showinfo("Restore Success", f"Database restored successfully!{extra_note}")
+        except Exception as e:
+            messagebox.showerror("Restore Failed", f"Failed to restore database:\n{e}")
 
     # =========================================================================
     # TAB 3: REPORTS & FILTERS
@@ -1613,9 +1745,21 @@ It also removes blank rows and fixes formatting issues.""""")
             "2. Quick Sort: Click any column header to toggle Ascending (▲) / Descending (▼).\n"
             "   The TOTAL row always stays pinned at the bottom.\n"
             "3. Auto-Fit Column: Double-click a column border/header to auto-resize.\n"
-            "4. Excel Import Tip: To avoid Excel date errors, click 'Export Excel' first\n"
-            "   to get the exact template layout, paste your new entries, then click 'Import Excel'.",
+            "4. Excel Import Tip: Export a report first to get the exact layout.\n"
+            "   Aadhaar Number is always optional on import; duplicate rows are skipped automatically,\n"
+            "   and new/longer Names & Aadhaar numbers merge smartly into the GB Database!",
         )
+
+        self.rep_aadhaar_var = tk.BooleanVar(value=bool(self.settings.get("show_aadhaar_in_report", False)))
+        self.chk_rep_aadhaar = tb.Checkbutton(
+            frame_toolbar,
+            text=" Show Aadhaar",
+            bootstyle="round-toggle",
+            variable=self.rep_aadhaar_var,
+            command=self.toggle_report_aadhaar,
+        )
+        if self.is_aadhaar_enabled():
+            self.chk_rep_aadhaar.pack(side="left", padx=(6, 8))
 
         btn_del_batch = tb.Button(
             frame_toolbar, text="🗑 Delete Selected", command=self.delete_batch_transactions, bootstyle="danger"
@@ -1666,6 +1810,12 @@ It also removes blank rows and fixes formatting issues.""""")
             padding=8
         )
         self.lbl_rep_summary.pack(side="right", padx=10)
+
+    def toggle_report_aadhaar(self):
+        self.settings["show_aadhaar_in_report"] = bool(self.rep_aadhaar_var.get())
+        save_settings(self.settings)
+        if self._report_records or self.rep_tree is not None:
+            self.run_report()
 
     def reset_report_filters(self):
         """Reset all report filters and sort controls back to defaults and re-run."""
@@ -1793,6 +1943,14 @@ It also removes blank rows and fixes formatting issues.""""")
         cursor = conn.cursor()
         cursor.execute(query, params)
         rows = cursor.fetchall()
+
+        include_aadhaar = self.is_report_aadhaar_enabled()
+        aadhaar_map = {}
+        if include_aadhaar:
+            cursor.execute("SELECT LOWER(TRIM(gb_number)), COALESCE(aadhaar_number, '') FROM gb_database")
+            for gb_k, aad_v in cursor.fetchall():
+                if gb_k and aad_v:
+                    aadhaar_map[gb_k] = aad_v
         conn.close()
 
         self._report_records = []
@@ -1803,11 +1961,13 @@ It also removes blank rows and fixes formatting issues.""""")
                 "Receipt": r[1],
                 "GB Number": r[2],
                 "Name": r[3],
-                "Country": r[4],
-                "Place": r[5],
-                "Currency": r[6],
-                "Transaction Date": format_db_date(r[7]),
             }
+            if include_aadhaar:
+                base["Aadhaar Number"] = aadhaar_map.get(str(r[2] or "").strip().lower(), "")
+            base["Country"] = r[4]
+            base["Place"] = r[5]
+            base["Currency"] = r[6]
+            base["Transaction Date"] = format_db_date(r[7])
             data_json = json.loads(r[8])
 
             selected_head = self.flt_head.get()
@@ -2109,6 +2269,7 @@ It also removes blank rows and fixes formatting issues.""""")
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         imported = 0
+        skipped_dupes = 0
         entry_date_db = datetime.date.today().strftime("%Y-%m-%d")
 
         for _, row in df_import.iterrows():
@@ -2179,13 +2340,25 @@ It also removes blank rows and fixes formatting issues.""""")
                     aadhaar_col_val = clean_aadhaar(row.get(aad_col))
                     break
 
-            self._upsert_gb_record(
-                cursor,
-                gb_num,
-                name,
-                aadhaar_col_val,
-                update_aadhaar=bool(aadhaar_col_val),
+            # Smart non-destructive GB merge (always keeps longer name & fills missing/new Aadhaar)
+            self._smart_merge_gb_record(cursor, gb_num, name, aadhaar_col_val)
+
+            # Skip exact duplicate transactions (same Receipt + GB Number + Transaction Date + Total)
+            cursor.execute(
+                """
+                SELECT 1 FROM transactions
+                WHERE LOWER(TRIM(receipt_no)) = LOWER(?)
+                  AND LOWER(TRIM(gb_number)) = LOWER(?)
+                  AND tx_date = ?
+                  AND ABS(total_amount - ?) < 1e-6
+                LIMIT 1
+                """,
+                (receipt, gb_num, tx_date_db, total),
             )
+            if cursor.fetchone():
+                skipped_dupes += 1
+                continue
+
             cursor.execute(
                 """
                 INSERT INTO transactions 
@@ -2213,7 +2386,10 @@ It also removes blank rows and fixes formatting issues.""""")
         self.run_report()
         self.refresh_recent_entries()
         self.refresh_db_table()
-        messagebox.showinfo("Import Complete", f"Successfully imported {imported} transaction records.")
+        messagebox.showinfo(
+            "Import Complete",
+            f"Imported: {imported} transaction record(s).\nSkipped duplicates: {skipped_dupes}",
+        )
 
     def delete_batch_transactions(self):
         if not self.rep_tree:
@@ -2274,7 +2450,7 @@ It also removes blank rows and fixes formatting issues.""""")
 
         f_aadhaar_toggle = ttk.Frame(frame_hdr)
         f_aadhaar_toggle.grid(row=0, column=4, padx=15, pady=5, sticky="w")
-        self.aadhaar_var = tk.BooleanVar(value=bool(self.settings.get("enable_aadhaar", True)))
+        self.aadhaar_var = tk.BooleanVar(value=bool(self.settings.get("enable_aadhaar", False)))
         btn_aadhaar = tb.Checkbutton(
             f_aadhaar_toggle,
             text=" Enable Aadhaar Number",
@@ -2484,6 +2660,8 @@ It also removes blank rows and fixes formatting issues.""""")
         self.settings["enable_aadhaar"] = bool(self.aadhaar_var.get())
         save_settings(self.settings)
         self.apply_aadhaar_visibility()
+        if getattr(self, "_report_records", None) or getattr(self, "rep_tree", None) is not None:
+            self.run_report()
 
     def toggle_theme(self):
         current_theme = tb.Style().theme.name
