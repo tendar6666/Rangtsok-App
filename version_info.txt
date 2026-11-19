@@ -18,7 +18,7 @@ VSVersionInfo(
         StringTable(
           '040904B0',
           [
-            StringStruct('CompanyName', 'Office of Tibet'),
+            StringStruct('CompanyName', 'Tenzin Tendar'),
             StringStruct('FileDescription', 'Voluntary Contribution Recording System (Rangtsok App)'),
             StringStruct('FileVersion', '1.2.0.0'),
             StringStruct('InternalName', 'Rangtsok_app'),
