@@ -1,0 +1,35 @@
+# UTF-8
+#
+# Windows Version Info resource for PyInstaller (Rangtsok_app.exe)
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 2, 0, 0),
+    prodvers=(1, 2, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [
+            StringStruct('CompanyName', 'Office of Tibet'),
+            StringStruct('FileDescription', 'Voluntary Contribution Recording System (Rangtsok App)'),
+            StringStruct('FileVersion', '1.2.0.0'),
+            StringStruct('InternalName', 'Rangtsok_app'),
+            StringStruct('LegalCopyright', 'Copyright (c) 2026 Rangtsok App Contributors (MIT License)'),
+            StringStruct('OriginalFilename', 'Rangtsok_app.exe'),
+            StringStruct('ProductName', 'Rangtsok App - Voluntary Contribution Recording System'),
+            StringStruct('ProductVersion', '1.2.0.0'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
