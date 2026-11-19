@@ -28,7 +28,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -54,15 +53,6 @@ jobs:
           Write-Host "FileVersion     :" $info.FileVersion
           Write-Host "CompanyName     :" $info.CompanyName
           Write-Host "LegalCopyright  :" $info.LegalCopyright
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: rangtsok-app-windows
-          path: |
-            dist/Rangtsok_app.exe
-            User_Manual.pdf
-          retention-days: 30
 
       - name: Publish GitHub Release (on version tags v*)
         if: startsWith(github.ref, 'refs/tags/v')

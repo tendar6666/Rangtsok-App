@@ -54,13 +54,17 @@ class TestTransactionsWorkflow(unittest.TestCase):
         self.test_settings_path = os.path.join(self.temp_dir, "settings.json")
         self.test_db_path = os.path.join(self.temp_dir, "paljor_contribution.db")
 
-        # Copy original settings or use defaults
+        # Copy original settings or use defaults with deterministic FY period for CI
         orig_settings_path = os.path.join(WORKSPACE_ROOT, "settings.json")
         if os.path.exists(orig_settings_path):
-            shutil.copy(orig_settings_path, self.test_settings_path)
+            with open(orig_settings_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
         else:
-            with open(self.test_settings_path, "w", encoding="utf-8") as f:
-                json.dump(Rangtsok_app.DEFAULT_SETTINGS, f, indent=4)
+            cfg = json.loads(json.dumps(Rangtsok_app.DEFAULT_SETTINGS))
+        cfg["from_date"] = "01-01-2020"
+        cfg["to_date"] = "31-12-2030"
+        with open(self.test_settings_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4)
 
         # Patch module-level paths to isolated test paths
         self.orig_settings_file = Rangtsok_app.SETTINGS_FILE

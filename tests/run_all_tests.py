@@ -75,19 +75,27 @@ def run_suite(suite_filename):
     start_time = time.perf_counter()
     cmd = [sys.executable, "-m", "unittest", f"tests/{suite_filename}"]
 
-    proc = subprocess.run(
-        cmd,
-        cwd=str(WORKSPACE_ROOT),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace"
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(WORKSPACE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=240,
+        )
+        returncode = proc.returncode
+        combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        returncode = 124
+        out_str = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        err_str = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        combined_output = out_str + "\n" + err_str + "\n[TIMEOUT] Test suite exceeded 240 seconds."
     elapsed = time.perf_counter() - start_time
 
-    combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
     tests_run, passed, failed, errors, status = parse_unittest_output(
-        combined_output, proc.returncode
+        combined_output, returncode
     )
 
     return {
@@ -98,7 +106,7 @@ def run_suite(suite_filename):
         "errors": errors,
         "duration": elapsed,
         "status": status,
-        "returncode": proc.returncode,
+        "returncode": returncode,
         "output": combined_output,
     }
 
